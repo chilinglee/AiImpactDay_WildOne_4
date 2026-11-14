@@ -1,0 +1,10 @@
+# 只版控 Skill；資料、輸出、內部文件都不進 repo
+*.csv
+*.zip
+*.docx
+*.ipynb
+yewan_output/
+data/
+__pycache__/
+Cohort_SKILL.md
+cohort_analysis.py
