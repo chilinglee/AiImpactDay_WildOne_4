@@ -873,56 +873,70 @@ def t2_failure_outcome(plans: pd.DataFrame, period_start: pd.Timestamp) -> pd.Da
     return pd.DataFrame(rows)
 
 
-def t2_preventive_list(plans: pd.DataFrame, sp: pd.DataFrame, as_of: pd.Timestamp) -> pd.DataFrame:
-    """預防性提醒名單（一人一列）：還在扣款、但下一期落在高風險期數，或即將到期的人。
-    『有扣款失敗紀錄』只有在檢定顯著時才列為理由。"""
+REVIVAL_STATUSES = ["已失敗", "待處理", "暫停中"]
+REVIVAL_MIN_DAYS = 3          # 失敗後超過幾天還沒回來，才算「不會自己回來」（官方資料：回來的人都在 0–3 天內）
+P2_RETENTION = 0.60           # 所屬設定期數 Cohort 在目前期數的留存率低於此值 → P2
+
+
+def t2_revival_list(plans: pd.DataFrame, tx: pd.DataFrame, as_of: pd.Timestamp,
+                    min_days: int = REVIVAL_MIN_DAYS) -> pd.DataFrame:
+    """起死回生名單（一人一列）：狀態為 已失敗／待處理／暫停中，名單撈取日（as_of）距最近失敗日期超過 min_days 天，
+    而且這個人在那之後沒有任何成功扣款（任何方案都算，換卡另開也算回來）。
+    暫停中多半沒有最近失敗日期，改用最近一筆收到日期（暫停前最後一次成功扣款）當基準。"""
+    p = plans[plans["明細有列"] & plans["狀態"].isin(REVIVAL_STATUSES)].copy()
+    # 最近失敗日期若早於此方案最後一次成功扣款（失敗過、恢復、後來才暫停），停下來的時間點是最後一次成功扣款
+    use_fail = p["最近失敗日期"].notna() & ~(p["最近失敗日期"] < p["最近成功扣款日"])
+    p["基準日"] = p["最近失敗日期"].where(use_fail, p["最近成功扣款日"])
+    p["基準日來源"] = np.where(use_fail, "最近失敗日期", "最近一筆收到日期")
+    last = tx[tx["捐款類型"] == "定期定額"].groupby("系統編號")["捐款日期"].max()
+    p["此人最後成功扣款日"] = p["系統編號"].map(last)
+    p["已回來"] = p["此人最後成功扣款日"] > p["基準日"]
+    p["距撈取日天數"] = (as_of.normalize() - p["基準日"].dt.normalize()).dt.days
+    p = p[~p["已回來"] & (p["距撈取日天數"] > min_days)]
+    p = p.sort_values("距撈取日天數").drop_duplicates("系統編號")
+    out = p[["系統編號", "定期捐款編號", "狀態", "基準日", "基準日來源", "距撈取日天數", "約定金額", "執行期數",
+             "約定總期數", "金流機制"]].rename(columns={"基準日": "停止日期", "基準日來源": "停止日期依據",
+                                                     "執行期數": "已扣期數"})
+    out["停止日期"] = out["停止日期"].dt.date
+    out["約定總期數"] = np.where(plans.set_index("定期捐款編號").loc[out["定期捐款編號"], "不限期"].to_numpy(),
+                            "不限", out["約定總期數"].astype("Int64").astype(str))
+    return out.reset_index(drop=True)
+
+
+def _cohort_retention_at(tc: pd.DataFrame, group: str, k: int) -> float:
+    """設定期數 Cohort 在第 k 期的留存率；該格因樣本不足留空時，沿用前面最後一個有值的期數（留存只會遞減）。"""
+    if group not in set(tc["設定期數"]):
+        return np.nan
+    row = tc.set_index("設定期數").loc[group]
+    vals = [(int(c[1:-1]), row[c]) for c in tc.columns if c.startswith("第") and c.endswith("期")]
+    vals = [v for kk, v in vals if kk <= k and pd.notna(v)]
+    return float(vals[-1]) if vals else np.nan
+
+
+def t2_preventive_list(plans: pd.DataFrame, sp: pd.DataFrame, tc: pd.DataFrame, as_of: pd.Timestamp) -> pd.DataFrame:
+    """預防性提醒名單（一人一列），分優先級：
+    P1：下一期是高風險期數（停止率 95% 下界高於平均的期數；官方資料＝第 1、2、6、12、24 期）。
+    P2：此人所屬設定期數的 Cohort 留存率，在他目前的期數已經低於 60%。兩者都符合時列為 P1。"""
     risky, pooled = risky_periods(sp)
-    hz = sp.set_index("期數")["停止率(hazard)"]
-    lst = hazard_base(plans)
-    lst = lst[lst["明細有列"]]
-    stat, dof, pval = chi2_independence(pd.crosstab(lst["有扣款失敗"], lst["真流失"]))
-    fail_matters = verdict(pval, int(lst["真流失"].sum())) == "差異顯著"
     a = plans[plans["是否在扣款中"]].copy().reset_index(drop=True)
     a["下一期"] = (a["執行期數"] + 1).astype(int)
+    a["設定期數"] = [_term_cohort_label(t, u) for t, u in zip(a["約定總期數"], a["不限期"])]
+    a["目前期數留存率"] = [_cohort_retention_at(tc, g, int(k)) if g else np.nan
+                     for g, k in zip(a["設定期數"], a["執行期數"])]
+    p1 = a["下一期"].isin(risky)
+    p2 = a["目前期數留存率"] < P2_RETENTION
+    a["優先級"] = np.select([p1, p2], ["P1", "P2"], "")
+    a = a[a["優先級"] != ""].copy()
     a["預計下次扣款日"] = a["最近成功扣款日"].dt.normalize() + pd.DateOffset(months=1)
     a["建議寄送日"] = (a["預計下次扣款日"] - pd.Timedelta(days=7)).clip(lower=as_of + pd.Timedelta(days=1))
-    score = pd.Series(0.0, index=a.index)
-    reasons = [[] for _ in range(len(a))]
-    action = pd.Series("", index=a.index)
-
-    def rule(mask, pts, reason_fn, act):
-        nonlocal score
-        m = mask.fillna(False).to_numpy(dtype=bool)
-        score += np.where(m, pts, 0)
-        for i in np.flatnonzero(m):
-            reasons[i].append(reason_fn(a.iloc[i]))
-        empty = (action == "").to_numpy() & m
-        action[empty] = act
-
-    rule(~a["不限期"] & (a["約定總期數"] > 0) & a["剩餘期數"].between(0, 2), 30,
-         lambda r: f"約定 {int(r['約定總期數'])} 期，只剩 {int(r['剩餘期數'])} 期", "到期前續約邀請：成果回顧＋續約連結")
-    rule(a["下一期"].isin(risky), 25,
-         lambda r: f"下一期是第 {int(r['下一期'])} 期（歷史停止率 {hz.get(int(r['下一期']), 0):.1%}，平均 {pooled:.1%}）",
-         "扣款前關懷：分享這筆捐款幫到的動物")
-    if fail_matters:
-        rule(a["有扣款失敗"] & (a["最近失敗日期"] >= as_of - pd.Timedelta(days=365)), 20,
-             lambda r: "近一年有扣款失敗紀錄", "扣款前提醒：確認卡片效期與額度")
-    score += (a["約定金額"] / 100).clip(upper=15).fillna(0)
-    a["優先分數"] = score.round(1)
-    a["理由"] = ["；".join(x) for x in reasons]
-    a["建議行動"] = action
-    a = a[a["建議行動"] != ""]
-    a = a.sort_values("優先分數", ascending=False).drop_duplicates("系統編號") \
-         .sort_values(["建議寄送日", "優先分數"], ascending=[True, False])
-    cols = ["系統編號", "定期捐款編號", "建議寄送日", "預計下次扣款日", "優先分數", "建議行動", "理由", "狀態", "下一期",
-            "約定總期數", "剩餘期數", "約定金額", "金流機制", "年齡", "性別", "鄉鎮市區"]
-    out = a[cols].reset_index(drop=True)
+    a = a.sort_values(["優先級", "建議寄送日", "約定金額"], ascending=[True, True, False]).drop_duplicates("系統編號")
+    out = a[["優先級", "系統編號", "定期捐款編號", "建議寄送日", "預計下次扣款日", "下一期", "設定期數",
+             "目前期數留存率", "約定金額", "金流機制"]].copy()
     out["建議寄送日"] = out["建議寄送日"].dt.date
     out["預計下次扣款日"] = out["預計下次扣款日"].dt.date
-    out.attrs["test"] = {"檢定": "有扣款失敗紀錄 與 真流失 是否相關（決定要不要列為預防理由）", "p值": round(pval, 4),
-                         "判定": verdict(pval, int(lst["真流失"].sum()))}
-    out.attrs["risky"] = {"高風險期數": risky, "平均停止率": round(pooled, 4)}
-    return out
+    out["目前期數留存率"] = out["目前期數留存率"].round(3)
+    out.attrs["risky"] = {"高風險期數": risky, "平均停止率": round(pooled, 4), "P2留存率門檻": P2_RETENTION}
+    return out.reset_index(drop=True)
 
 
 def t3_event_type_summary(lift: pd.DataFrame, new: pd.DataFrame) -> pd.DataFrame:
@@ -1115,10 +1129,10 @@ def run(data: Path, out_dir: Path, as_of: str | None = None) -> dict:
     res["t2_優先提醒名單"] = t2_reminder_list(plans)
     res["t2_進度比例停止"] = t2_progress_ratio(plans)
     res["t2_設定期數Cohort留存"] = t2_term_cohort(plans)
+    term_cohort_long = t2_term_cohort(plans, max_k=int(plans["執行期數"].max()))  # P2 需要 36 期以後的留存
     res["t2_失敗後結果"] = t2_failure_outcome(plans, d.period_start)
-    res["t2_預防性提醒名單"] = t2_preventive_list(plans, res["t2_停止期數"], d.as_of)
-    rl_all = res["t2_優先提醒名單"]
-    res["t2_起死回生名單"] = rl_all[~rl_all["狀態"].isin(ACTIVE_STATUSES)].reset_index(drop=True)
+    res["t2_預防性提醒名單"] = t2_preventive_list(plans, res["t2_停止期數"], term_cohort_long, d.as_of)
+    res["t2_起死回生名單"] = t2_revival_list(plans, tx, d.as_of)
     res["t3_活動前後"] = t3_event_lift(d, donors, plans)
     res["t3_未解釋高峰"] = t3_unexplained_spikes(d, donors, tx)
     res["t3_新捐款人後續行為"], new_detail = t3_new_donor_followup(d, donors, tx)
@@ -1156,9 +1170,10 @@ def run(data: Path, out_dir: Path, as_of: str | None = None) -> dict:
         "未解釋高峰": res["t3_未解釋高峰"].to_dict("records"),
         "優先提醒名單": {"人數": int(len(rl)), "依建議行動": rl["建議行動"].value_counts().to_dict()},
         "起死回生名單": {"人數": int(len(res["t2_起死回生名單"])),
-                     "依建議行動": res["t2_起死回生名單"]["建議行動"].value_counts().to_dict()},
+                     "依狀態": res["t2_起死回生名單"]["狀態"].value_counts().to_dict(),
+                     "撈取日": str(d.as_of.date()), "失敗後超過天數": REVIVAL_MIN_DAYS},
         "預防性提醒名單": {"人數": int(len(res["t2_預防性提醒名單"])),
-                       "依建議行動": res["t2_預防性提醒名單"]["建議行動"].value_counts().to_dict(),
+                       "依優先級": res["t2_預防性提醒名單"]["優先級"].value_counts().to_dict(),
                        **res["t2_預防性提醒名單"].attrs["risky"]},
         "期滿續約": res["t2_進度比例停止"].attrs["renewal"],
         "參數": {"停止狀態": sorted(STOPPED_STATUSES), "靜默流失天數": SILENT_DAYS,

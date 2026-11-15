@@ -76,13 +76,17 @@ A 組用官方格式的手工小資料檢查定義（含換卡、首期失敗、
 ### Step 6：交付
 - **互動報告**：`report.html`（表格可排序/篩選、圖表可 hover）。
 - **三頁簡報**：用 `references/analysis_playbook.md` 最後的簡報骨架。
-- **行銷名單**：`t2_預防性提醒名單.csv`（還在扣款、下一期落在高風險期數或即將到期，附建議寄送日）、`t2_起死回生名單.csv`（已停止、且沒有其他方案在扣款）。`t2_優先提醒名單.csv` 是兩者合併的完整版。
-- **Gmail 月報（圖表＋名單）**：
+- **行銷名單**（一人一列，欄位精簡，沒有分數或理由）：
+  - `t2_起死回生名單.csv`：狀態為已失敗／待處理／暫停中，名單撈取日距停止日期**超過 3 天**、而且這個人之後沒有任何成功扣款（換卡另開方案也算回來）。停止日期＝最近失敗日期；暫停中沒有失敗日期，或失敗後又成功扣過款，改用最近一筆收到日期。
+  - `t2_預防性提醒名單.csv`：仍在扣款的人，分優先級。**P1**＝下一期即將進入高風險期數（官方資料＝第 1、2、6、12、24 期）；**P2**＝他所屬的設定期數 Cohort 在目前期數的留存率已低於 60%（例如設定 37–60 期、已扣 30 期以上）。兩者都符合列 P1。附建議寄送日（扣款日前 7 天）。
+  - `t2_優先提醒名單.csv`：舊版的計分名單，保留給分析用，不寄給勸募科。
+- **Gmail 行銷名單信（預設，信裡不放數據或圖表）**：
   ```bash
   python scripts/email_digest.py --output-dir yewan_output
   ```
-  產生 `yewan_output/email/`：7 張圖（第幾期停／約定進度與期滿續約／設定期數 Cohort 熱圖／失敗之後／活動獲客／活動留存／名單時程）、`email.html`、兩份名單 CSV、`manifest.json`（主旨與附件順序）。
-  再用 Gmail 工具建立**草稿**（不要直接寄出）：`htmlBody` 用 `email.html`，附件依 `manifest.json` 順序放（圖片 `inline: true`，第 N 張對應 `cid:attN`；CSV `inline: false`），收件人要先問使用者（沒指定就寄給使用者自己）。**內嵌圖片的檔名必須是英數字**（中文檔名的內嵌圖會被 Gmail 草稿工具整張丟掉，`<img>` 變成 `cid:` 空白）；CSV 附件可以用中文檔名。建好草稿後用 `get_draft`（RAW）確認每個 `cid` 都對得到圖片。
+  產生 `yewan_output/email/`：`野灣行銷名單_<撈取日>.xlsx`（分頁：起死回生名單、預防性_P1、預防性_P2）、`email.html`／`email.txt`（每份名單的對象與建議做法，沒有數字）、`manifest.json`（主旨與附件）。
+  用 Gmail 工具建草稿或寄出：`htmlBody` 用 `email.html`，附件依 `manifest.json`（xlsx，`inline: false`）。收件人要先問使用者（沒指定就寄給使用者自己）。
+- **完整月報（圖表＋數據，需要時才用）**：加上 `--with-charts`，產生 7 張圖（第幾期停／約定進度與期滿續約／設定期數 Cohort 熱圖／失敗之後／活動獲客／活動留存／名單時程）＋說明＋名單 CSV。**內嵌圖片的檔名必須是英數字**（中文檔名的內嵌圖會被 Gmail 草稿工具整張丟掉）；建好後用 `get_draft`（RAW）確認每個 `cid` 都對得到圖片。
   答案句由程式依判定欄位產生；不要手改成「看起來有差」的結論。圖中文字需要中文字型（Colab：`!apt -y install fonts-noto-cjk`）。
 
 每次交付都必須回答（官方「展示時請回答」）：
@@ -110,7 +114,7 @@ A 組用官方格式的手工小資料檢查定義（含換卡、首期失敗、
 | `scripts/yewan_cohort.py` | 主管線：載入（xlsx/CSV）→ 方案還原 → 品質檢查 → 任務一/二/三 → 輸出 |
 | `scripts/fetch_sheet.py` | 官方 xlsx（本機／Drive／Google 試算表）→ 5 個 CSV |
 | `scripts/report.py` | 產生 `report.html` |
-| `scripts/email_digest.py` | 產生 Gmail 月報：圖表（PNG）＋ HTML 信件＋預防性／起死回生名單 |
+| `scripts/email_digest.py` | 產生 Gmail 行銷名單信（預設只有名單 xlsx）；`--with-charts` 產生含圖表的完整月報 |
 | `scripts/test_yewan_cohort.py` | 定義測試 + 獨立對帳測試 |
 | `references/metrics.md` | 每個指標的定義、公式和為什麼這樣算 |
 | `references/data_quality_known_issues.md` | 官方資料的已知問題和處理方式 |

@@ -188,9 +188,26 @@ class DefinitionTests(unittest.TestCase):
         self.assertEqual(int(allr["流失數"].sum()), 0)            # 有約定期數的 P1 沒流失
         self.assertEqual(int(allr["經過的期數(人期)"].sum()), 4)   # P1 第 0–3 期
         sp = yc.t2_stop_period(self.plans_df)
-        pv = yc.t2_preventive_list(self.plans_df, sp, self.data.as_of)
+        tc = yc.t2_term_cohort(self.plans_df)
+        pv = yc.t2_preventive_list(self.plans_df, sp, tc, self.data.as_of)
         self.assertTrue(set(pv["系統編號"]) <= {"1", "2"})        # 只會是仍在扣款的人
         self.assertEqual(len(pv), pv["系統編號"].nunique())
+        self.assertTrue(set(pv["優先級"]) <= {"P1", "P2"})
+
+    def test_revival_list(self):
+        rv = yc.t2_revival_list(self.plans_df, self.tx, self.data.as_of).set_index("系統編號")
+        self.assertIn("5", rv.index)                              # P5 首期失敗 1/5，之後沒有任何扣款
+        self.assertEqual(rv.loc["5", "停止日期依據"], "最近失敗日期")
+        self.assertNotIn("2", rv.index)                           # P2 失敗 1/10，但 1/25 起另開方案在扣 → 已回來
+        self.assertNotIn("優先分數", rv.columns)
+        # 失敗不滿 3 天的不列入：把撈取日設在 P5 失敗後第 2 天
+        early = yc.t2_revival_list(self.plans_df, self.tx, pd.Timestamp("2026-01-07"))
+        self.assertNotIn("5", set(early["系統編號"]))
+
+    def test_cohort_retention_carry_forward(self):
+        tc = pd.DataFrame({"設定期數": ["不限期"], "第0期": [1.0], "第1期": [0.9], "第2期": [float("nan")]})
+        self.assertAlmostEqual(yc._cohort_retention_at(tc, "不限期", 5), 0.9)   # 空白格沿用前一個有值的期數
+        self.assertTrue(pd.isna(yc._cohort_retention_at(tc, "12期", 1)))
 
     def test_term_cohort(self):
         old = yc.TERM_COHORT_MIN_AT_RISK

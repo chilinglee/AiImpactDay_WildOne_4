@@ -1,9 +1,15 @@
-"""把分析結果做成一封「給公益勸募科的月報信」：每個問題一句答案＋一張圖＋行銷名單（附件）。
+"""把分析結果做成給公益勸募科的信。
 
 用法（先跑過 yewan_cohort.py）：
-    python email_digest.py --output-dir yewan_output
+    python email_digest.py --output-dir yewan_output                 # 預設：只有行銷名單，信裡不放數據或圖表
+    python email_digest.py --output-dir yewan_output --with-charts   # 完整月報：每題一句答案＋一張圖＋名單
 
-產出 <output-dir>/email/：
+預設模式產出 <output-dir>/email/：
+    野灣行銷名單_<撈取日>.xlsx    三個分頁：起死回生名單、預防性_P1、預防性_P2
+    email.html / email.txt        簡短說明（每份名單的對象與建議做法，沒有數字）
+    manifest.json                 主旨與附件
+
+--with-charts 產出 <output-dir>/email/：
     c1_*.png … c6_*.png          內嵌圖表（依 manifest 順序 = cid:att0, att1, …）。檔名必須是英數字：
                                   Gmail 草稿工具遇到中文檔名的內嵌圖片會整張丟掉
     名單_*.csv                    行銷名單附件（UTF-8 BOM，Excel / Google Sheets 直接開）
@@ -214,7 +220,7 @@ def chart_lists(prev, revive, path):
     fig, (ax, ax2) = plt.subplots(1, 2, figsize=(9, 3.4))
     p = prev.copy()
     p["週"] = pd.to_datetime(p["建議寄送日"]).dt.to_period("W-SUN").dt.end_time.dt.strftime("%m/%d 前")
-    tab = pd.crosstab(p["週"], p["建議行動"].str.split("：").str[0])
+    tab = pd.crosstab(p["週"], p["優先級"])
     bottom = None
     for i, c in enumerate(tab.columns):
         ax.bar(tab.index, tab[c], bottom=bottom, color=[S1, S2, S3][i % 3], label=c, edgecolor=SURFACE, linewidth=1)
@@ -222,7 +228,7 @@ def chart_lists(prev, revive, path):
     ax.set_title("預防性提醒：每週要寄幾封（扣款日前 7 天）")
     ax.legend(fontsize=9, loc="upper right")
     ax.tick_params(axis="x", labelsize=9)
-    r = revive["建議行動"].str.split("：").str[0].value_counts().sort_values()
+    r = revive["狀態"].value_counts().sort_values()
     ax2.barh(r.index, r.values, color=S1, height=0.6)
     for i, v in enumerate(r.values):
         ax2.text(v + 2, i, str(v), va="center", fontsize=9)
@@ -303,10 +309,6 @@ def build(out: Path) -> dict:
     a3 = (f"期間內 {int(t['期間內有失敗的方案數'])} 個方案曾扣款失敗：{_pct(t['同方案恢復比例'], 0)} 同一方案就恢復了，"
           f"{_pct(t['另開方案在扣比例'], 0)} 另開新方案（換卡），只有 {_pct(t['尚未恢復比例'], 0)}（{int(t['尚未恢復'])} 個）"
           f"沒有回來——這些人在「起死回生名單」。")
-    fail_t = tests.get("t2_預防性提醒名單", {})
-    a3 += (" 「曾經扣款失敗」本身<b>不會</b>讓人比較容易流失（"
-           f"p = {fail_t.get('p值')}，{E(fail_t.get('判定', ''))}），所以預防性提醒不用它當理由。"
-           if fail_t.get("判定") != "差異顯著" else " 曾經扣款失敗的人流失率顯著較高，已列入預防性提醒理由。")
     sig_new = ets[(ets["新捐款人_顯著活動數"] > 0)].sort_values("新捐款人_增幅倍數", ascending=False)
     sig_rec = lift[(lift["指標"] == "新定期方案") & (lift["判定"] == "顯著增加")]
     sig_ev = lift[(lift["指標"] == "新捐款人") & (lift["判定"] == "顯著增加")].sort_values("增幅倍數", ascending=False)
@@ -354,13 +356,13 @@ def build(out: Path) -> dict:
                 f'<img src="cid:{cid}" width="640" style="width:100%;max-width:640px;height:auto;display:block;'
                 f'border:1px solid {GRID};border-radius:8px" alt="{E(q)}">{extra}')
 
-    prev_cols = ["系統編號", "建議寄送日", "建議行動", "理由", "約定金額"]
-    rev_cols = ["系統編號", "建議行動", "理由", "狀態", "約定金額"]
+    prev_cols = ["優先級", "系統編號", "建議寄送日", "下一期", "設定期數", "約定金額"]
+    rev_cols = ["系統編號", "狀態", "停止日期", "距撈取日天數", "約定金額"]
     o = s["總覽"]
     body = f"""<div style="font-family:'Microsoft JhengHei','Noto Sans TC',Arial,sans-serif;max-width:680px;color:{INK}">
 <p style="color:{INK2};margin:0 0 4px">野灣公益勸募科｜定期定額月報（資料期間 {E(o['資料期間'])}，示範資料皆為虛構）</p>
 <h1 style="font-size:22px;margin:0 0 12px">本月先聯絡 {s['預防性提醒名單']['人數'] + s['起死回生名單']['人數']} 人：預防性 {s['預防性提醒名單']['人數']}、起死回生 {s['起死回生名單']['人數']}</h1>
-<p style="line-height:1.7;margin:0 0 4px">兩份名單都在附件（CSV，可直接匯入 Google Sheets）。每一列都有「建議寄送日／建議行動／理由」，可以直接分工。
+<p style="line-height:1.7;margin:0 0 4px">兩份名單都在附件（CSV，可直接匯入 Google Sheets）。預防性名單分 P1／P2 優先級並附建議寄送日，可以直接分工。
 下面每張圖回答一個問題；只有通過統計檢定的差異才寫成結論，沒通過的會明寫「資料不支持」。</p>
 <h2 style="font-size:18px;margin:24px 0 6px">留住定期定額</h2>
 {section(1, "人最常在第幾期停下來？", a1, "att0")}
@@ -396,11 +398,72 @@ def build(out: Path) -> dict:
     return manifest
 
 
+XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+
+def build_lists(out: Path) -> dict:
+    """預設模式：信裡不放任何數據或圖表，只有行銷名單（一個 Excel、三個分頁）＋簡短使用說明。"""
+    s = json.loads((out / "summary.json").read_text(encoding="utf-8"))
+    em = out / "email"
+    em.mkdir(exist_ok=True)
+    as_of = s["起死回生名單"]["撈取日"]
+    revive, prev = _read(out, "t2_起死回生名單"), _read(out, "t2_預防性提醒名單")
+    risky = s["預防性提醒名單"]["高風險期數"]
+    p2_cut = s["預防性提醒名單"]["P2留存率門檻"]
+    days = s["起死回生名單"]["失敗後超過天數"]
+    xlsx = em / f"野灣行銷名單_{as_of}.xlsx"
+    sheets = {"起死回生名單": revive,
+              "預防性_P1": prev[prev["優先級"] == "P1"],
+              "預防性_P2": prev[prev["優先級"] == "P2"]}
+    with pd.ExcelWriter(xlsx, engine="openpyxl") as w:
+        for name, df in sheets.items():
+            df.to_excel(w, sheet_name=name, index=False)
+            ws = w.sheets[name]
+            ws.freeze_panes = "A2"
+            for col in ws.columns:
+                width = max(len(str(c.value or "")) for c in col[:200])
+                ws.column_dimensions[col[0].column_letter].width = min(max(width * 1.8, 8), 30)
+    li = "padding:4px 0;line-height:1.7"
+    body = f"""<div style="font-family:'Microsoft JhengHei','Noto Sans TC',Arial,sans-serif;max-width:640px;color:{INK}">
+<p style="margin:0 0 12px">公益勸募科好，本週的定期定額行銷名單在附件「{E(xlsx.name)}」（名單撈取日 {E(as_of)}，示範資料皆為虛構）。</p>
+<p style="margin:16px 0 4px"><b>分頁一：起死回生名單</b></p>
+<ul style="margin:0;padding-left:20px">
+<li style="{li}">對象：狀態為已失敗／待處理／暫停中，撈取日距最近失敗日期超過 {days} 天、而且之後沒有任何成功扣款的捐款人。</li>
+<li style="{li}">已排除換卡另開方案、已經回來的人。</li>
+<li style="{li}">建議：已失敗的人，說明如何用新卡重新設定；暫停中的人，分享近期救援成果並附恢復連結。</li>
+</ul>
+<p style="margin:16px 0 4px"><b>分頁二：預防性 P1（優先處理）</b></p>
+<ul style="margin:0;padding-left:20px">
+<li style="{li}">對象：仍在扣款、下一期即將進入第 {'、'.join(map(str, risky))} 期的捐款人。</li>
+<li style="{li}">建議：在「建議寄送日」（扣款日前 7 天）寄出關懷信，分享這筆捐款幫到的動物。</li>
+</ul>
+<p style="margin:16px 0 4px"><b>分頁三：預防性 P2</b></p>
+<ul style="margin:0;padding-left:20px">
+<li style="{li}">對象：仍在扣款，但和他設定同樣期數的捐款人，到這一期留下來的已經不到 {p2_cut:.0%}。</li>
+<li style="{li}">建議：P1 處理完再寄，感謝長期支持、回顧這段時間的成果。</li>
+</ul>
+<p style="color:{MUTED};font-size:12px;margin-top:20px">由 yewan-donor-cohort skill 自動產生。</p></div>"""
+    (em / "email.html").write_text(body, encoding="utf-8")
+    plain = (f"公益勸募科好，本週的定期定額行銷名單在附件「{xlsx.name}」（名單撈取日 {as_of}，示範資料皆為虛構）。\n\n"
+             f"分頁一：起死回生名單——已失敗／待處理／暫停中，距最近失敗日期超過 {days} 天且之後沒有成功扣款。\n"
+             f"分頁二：預防性 P1——下一期即將進入第 {'、'.join(map(str, risky))} 期，扣款日前 7 天寄出。\n"
+             f"分頁三：預防性 P2——同設定期數的捐款人到這一期留存已不到 {p2_cut:.0%}，P1 之後處理。")
+    (em / "email.txt").write_text(plain, encoding="utf-8")
+    manifest = {"subject": f"【野灣】本週定期定額行銷名單（{as_of}）",
+                "html": str((em / "email.html").resolve()), "text": str((em / "email.txt").resolve()),
+                "attachments": [{"path": str(xlsx.resolve()), "filename": xlsx.name, "mimeType": XLSX_MIME,
+                                 "inline": False}]}
+    (em / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    return manifest
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--output-dir", type=Path, default=Path("yewan_output"))
+    ap.add_argument("--with-charts", action="store_true",
+                    help="改產生含圖表與數據說明的完整月報（預設只有行銷名單）")
     a = ap.parse_args()
-    m = build(a.output_dir)
+    m = build(a.output_dir) if a.with_charts else build_lists(a.output_dir)
     print(m["subject"])
     print(f"信件與附件：{(a.output_dir / 'email').resolve()}")
 
