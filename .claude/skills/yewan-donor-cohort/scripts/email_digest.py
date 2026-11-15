@@ -114,6 +114,42 @@ def chart_progress(ratio, renewal, path):
     _save(fig, path)
 
 
+def chart_term_cohort(tc, path):
+    """設定期數 × 第幾期 留存熱圖。空白＝超過約定期數（方案已結束）或觀察數不足。"""
+    import numpy as np
+    from matplotlib.colors import LinearSegmentedColormap
+    cols = [c for c in tc.columns if c.startswith("第") and c.endswith("期")]
+    m = tc[cols].to_numpy(dtype=float)
+    ks = [int(c[1:-1]) for c in cols]
+    cmap = LinearSegmentedColormap.from_list("seq", ["#e8f1fc", "#9ec5f4", "#3987e5", "#1c4f8f"])
+    cmap.set_bad("#f4f3f0")
+    fig, ax = plt.subplots(figsize=(10, 0.55 * len(tc) + 1.6))
+    vmin = np.floor(np.nanmin(m) * 10) / 10
+    im = ax.imshow(np.ma.masked_invalid(m), aspect="auto", cmap=cmap, vmin=vmin, vmax=1)
+    for i in range(m.shape[0]):
+        for j in range(m.shape[1]):
+            v = m[i, j]
+            if not np.isnan(v):
+                ax.text(j, i, f"{v * 100:.0f}", ha="center", va="center", fontsize=6.5,
+                        color="#ffffff" if v > vmin + (1 - vmin) * 0.55 else INK)
+    labels = [f"{r['設定期數']}（{int(r['方案數'])}）" for _, r in tc.iterrows()]
+    ax.set_yticks(range(len(tc)), labels)
+    ax.set_xticks(range(0, len(ks), 3), [str(k) for k in ks[::3]])
+    ax.set_xlabel("第幾期（第 0 期＝第一次扣款）")
+    ax.set_ylabel("捐款人設定的約定期數（方案數）")
+    ax.grid(False)
+    for s in ax.spines.values():
+        s.set_visible(False)
+    for i, (_, r) in enumerate(tc.iterrows()):
+        txt = "—" if pd.isna(r["期滿後續約率"]) else _pct(r["期滿後續約率"], 0)
+        ax.text(len(ks) - 0.3, i, f"  期滿續約 {txt}", va="center", ha="left", fontsize=9, color=INK2)
+    ax.set_title("設定幾期的人，各期還有幾 % 在扣款？（數字＝留存 %；灰＝方案已期滿或樣本不足）")
+    cb = fig.colorbar(im, ax=ax, fraction=0.025, pad=0.13)
+    cb.ax.yaxis.set_major_formatter(matplotlib.ticker.PercentFormatter(1, decimals=0))
+    cb.outline.set_visible(False)
+    _save(fig, path)
+
+
 def chart_failure(fo, path):
     t = fo[fo["金流機制"] == "合計"].iloc[0]
     parts = [("同方案恢復", S1), ("另開方案在扣", S3), ("尚未恢復", S2)]
@@ -225,6 +261,7 @@ def build(out: Path) -> dict:
     em.mkdir(exist_ok=True)
     sp, ratio, fo = _read(out, "t2_停止期數"), _read(out, "t2_進度比例停止"), _read(out, "t2_失敗後結果")
     ets, prev, revive = _read(out, "t3_活動類型成效"), _read(out, "t2_預防性提醒名單"), _read(out, "t2_起死回生名單")
+    tc = _read(out, "t2_設定期數Cohort留存")
     lift = _read(out, "t3_活動前後")
     risky, pooled = s["預防性提醒名單"]["高風險期數"], s["預防性提醒名單"]["平均停止率"]
     tests = s["檢定結果"]
@@ -235,7 +272,8 @@ def build(out: Path) -> dict:
               ("c3_after_failure.png", lambda p: chart_failure(fo, p)),
               ("c4_event_acquisition.png", lambda p: chart_acquisition(ets, p)),
               ("c5_event_retention.png", lambda p: chart_retention(ets, p)),
-              ("c6_list_schedule.png", lambda p: chart_lists(prev, revive, p))]
+              ("c6_list_schedule.png", lambda p: chart_lists(prev, revive, p)),
+              ("c7_term_cohort.png", lambda p: chart_term_cohort(tc, p))]
     for name, fn in charts:
         fn(em / name)
 
@@ -292,6 +330,20 @@ def build(out: Path) -> dict:
     a5 += (" 90 天內再捐率各類活動<b>沒有顯著差異</b>（資料不支持「哪類活動的人比較會再捐」）。"
            if r90_v != "差異顯著" else " 90 天內再捐率各類活動有顯著差異。")
     a5 += " ⚠ 9 月媒體報導進來的人觀察不到 90 天，轉定期率會被低估。"
+    t = tc.set_index("設定期數")
+    a2b = ""
+    if "第2期" in t and t["第2期"].notna().any():
+        a2b = f"不論設定幾期，扣到第 2 期時都只剩 {_pct(t['第2期'].min(), 0)}–{_pct(t['第2期'].max(), 0)}。"
+    for g in t.sort_values("方案數", ascending=False).index:   # 用方案數最多的固定期數當例子
+        term = int(g[:-1]) if g[:-1].isdigit() else None
+        col = f"第{term}期" if term else None
+        if term and col in t and pd.notna(t.loc[g, col]):
+            a2b += (f"設定 {term} 期的人扣到第 {term} 期還有 {_pct(t.loc[g, col], 0)}，"
+                    f"但期滿後只有 {_pct(t.loc[g, '期滿後續約率'], 0)} 續約。")
+            break
+    if "不限期" in t.index and "第24期" in t:
+        a2b += f"不限期的人第 12 期 {_pct(t.loc['不限期', '第12期'], 0)}、第 24 期 {_pct(t.loc['不限期', '第24期'], 0)}。"
+    a2b += "（灰色＝方案已期滿或觀察中的方案不到 20 個。）"
     a6 = (f"在扣款日前 7 天寄，對象是下一期落在第 {'、'.join(map(str, risky))} 期，或約定期數只剩 0–2 期的人。"
           f"本月預防性提醒名單共 {s['預防性提醒名單']['人數']} 人；起死回生名單 {s['起死回生名單']['人數']} 人。")
 
@@ -313,6 +365,7 @@ def build(out: Path) -> dict:
 <h2 style="font-size:18px;margin:24px 0 6px">留住定期定額</h2>
 {section(1, "人最常在第幾期停下來？", a1, "att0")}
 {section(2, "設定了多少期、扣到幾成的時候最容易停？", a2, "att1")}
+{section("2-1", "設定幾期的人，各期還有幾 % 在扣款？（Cohort）", a2b, "att6")}
 {section(3, "扣款失敗之後：事後挽回與預防", a3, "att2")}
 <h2 style="font-size:18px;margin:32px 0 6px">讓人開始支持</h2>
 {section(4, "從什麼活動獲客率更高？能提升定期定額嗎？", a4, "att3")}
@@ -329,7 +382,7 @@ def build(out: Path) -> dict:
 資料缺口：④ 定期明細一人只有一列、捐款頁沒有來源欄位——建議匯出改為一個方案一列，捐款連結加上活動代碼。<br>
 由 yewan-donor-cohort skill 自動產生。</p></div>"""
     (em / "email.html").write_text(body, encoding="utf-8")
-    plain = "\n\n".join(["野灣定期定額月報", "1. " + a1, "2. " + a2, "3. " + a3, "4. " + a4, "5. " + a5, "6. " + a6,
+    plain = "\n\n".join(["野灣定期定額月報", "1. " + a1, "2. " + a2, "2-1. " + a2b, "3. " + a3, "4. " + a4, "5. " + a5, "6. " + a6,
                          "名單見附件。"]).replace("<b>", "").replace("</b>", "")
     (em / "email.txt").write_text(plain, encoding="utf-8")
     manifest = {

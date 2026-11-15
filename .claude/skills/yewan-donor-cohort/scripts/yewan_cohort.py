@@ -805,6 +805,53 @@ def t2_progress_ratio(plans: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+TERM_COHORT_ROWS = ["6期", "12期", "24期", "36期", "37-60期", "61期以上", "不限期"]
+TERM_COHORT_MIN_AT_RISK = 20
+
+
+def _term_cohort_label(term, unlimited) -> str:
+    if unlimited:
+        return "不限期"
+    if pd.isna(term) or term <= 0:
+        return ""
+    t = int(term)
+    if t in (6, 12, 24, 36):
+        return f"{t}期"
+    return "37-60期" if 37 <= t <= 60 else ("61期以上" if t > 60 else "")
+
+
+def t2_term_cohort(plans: pd.DataFrame, max_k: int = 36) -> pd.DataFrame:
+    """設定期數 Cohort：列＝捐款人設定的約定總期數，欄＝第 k 期，值＝撐過第 k 期仍在扣款的比例。
+    以 Kaplan-Meier（延遲進入）計：真流失才算離開；期滿（已完成）與換方案視為設限，不算流失。
+    固定期數的列，超過約定期數的格子留空（方案已結束）；仍在觀察的方案 < 20 的格子也留空。"""
+    b = hazard_base(plans)
+    b = b[b["明細有列"]].copy()
+    b["設定期數"] = [_term_cohort_label(t, u) for t, u in zip(b["約定總期數"], b["不限期"])]
+    b = b[b["設定期數"] != ""]
+    rows = []
+    for grp in TERM_COHORT_ROWS:
+        g = b[b["設定期數"] == grp]
+        if g.empty:
+            continue
+        done = g["狀態"].eq(COMPLETED_STATUS)
+        row = {"設定期數": grp, "方案數": len(g), "期間新方案數": int(g["期間新方案"].sum()),
+               "期滿方案數": int(done.sum()),
+               "期滿後續約率": round((done & g["此人仍有其他方案在扣款"]).sum() / done.sum(), 4) if done.sum() else np.nan}
+        term = int(grp[:-1]) if grp[:-1].isdigit() else None
+        surv = 1.0
+        for k in range(0, max_k + 1):
+            at_risk = int(((g["進入觀察期數"] <= k) & (g["執行期數"] >= k)).sum())
+            churn = int(((g["執行期數"] == k) & g["真流失"]).sum())
+            surv *= 1 - (churn / at_risk if at_risk else 0)
+            ok = at_risk >= TERM_COHORT_MIN_AT_RISK and (term is None or k <= term)
+            row[f"第{k}期"] = round(surv, 4) if ok else np.nan
+            row[f"_n{k}"] = at_risk
+        rows.append(row)
+    df = pd.DataFrame(rows)
+    df.attrs["at_risk"] = df[["設定期數"] + [f"_n{k}" for k in range(max_k + 1)]].copy()
+    return df.drop(columns=[f"_n{k}" for k in range(max_k + 1)])
+
+
 def risky_periods(sp: pd.DataFrame) -> tuple[list, float]:
     """高風險期數：該期停止率的 95% 下界 > 第 0–24 期的平均停止率。"""
     show = sp[sp["期數"] <= 24]
@@ -1067,6 +1114,7 @@ def run(data: Path, out_dir: Path, as_of: str | None = None) -> dict:
     res["t2_分群比較_流失"] = segment_compare(hb[hb["明細有列"]], "真流失", label="真流失率")
     res["t2_優先提醒名單"] = t2_reminder_list(plans)
     res["t2_進度比例停止"] = t2_progress_ratio(plans)
+    res["t2_設定期數Cohort留存"] = t2_term_cohort(plans)
     res["t2_失敗後結果"] = t2_failure_outcome(plans, d.period_start)
     res["t2_預防性提醒名單"] = t2_preventive_list(plans, res["t2_停止期數"], d.as_of)
     rl_all = res["t2_優先提醒名單"]

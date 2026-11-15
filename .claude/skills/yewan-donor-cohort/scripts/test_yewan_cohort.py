@@ -23,6 +23,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
+import pandas as pd  # noqa: E402
 import yewan_cohort as yc  # noqa: E402
 
 DATA: Path | None = None
@@ -190,6 +191,20 @@ class DefinitionTests(unittest.TestCase):
         pv = yc.t2_preventive_list(self.plans_df, sp, self.data.as_of)
         self.assertTrue(set(pv["系統編號"]) <= {"1", "2"})        # 只會是仍在扣款的人
         self.assertEqual(len(pv), pv["系統編號"].nunique())
+
+    def test_term_cohort(self):
+        old = yc.TERM_COHORT_MIN_AT_RISK
+        yc.TERM_COHORT_MIN_AT_RISK = 1
+        try:
+            tc = yc.t2_term_cohort(self.plans_df, max_k=26).set_index("設定期數")
+        finally:
+            yc.TERM_COHORT_MIN_AT_RISK = old
+        self.assertEqual(tc.loc["12期", "方案數"], 1)               # P1
+        self.assertEqual(tc.loc["12期", "第3期"], 1.0)               # P1 扣到第 3 期仍在扣
+        self.assertTrue(pd.isna(tc.loc["12期", "第4期"]))            # 之後觀察不到 ≠ 0
+        self.assertEqual(tc.loc["不限期", "方案數"], 2)              # P2（換卡）、P5（首期失敗）
+        self.assertEqual(tc.loc["不限期", "第0期"], 0.0)             # 第 0 期只有 P5 在觀察，且流失
+        self.assertTrue(pd.isna(tc.loc["不限期", "期滿後續約率"]))
 
     def test_events_expanded(self):
         ev = self.data.events
