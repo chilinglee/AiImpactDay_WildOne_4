@@ -175,6 +175,22 @@ class DefinitionTests(unittest.TestCase):
         self.assertIn("付款失敗挽回", rl.loc["5", "建議行動"])
         self.assertEqual(len(rl), rl.index.nunique())
 
+    def test_failure_outcome(self):
+        fo = yc.t2_failure_outcome(self.plans_df, self.data.period_start).set_index("金流機制")
+        self.assertEqual(fo.loc["合計", "同方案恢復"], 1)      # P1：2/5 失敗、3/5 恢復
+        self.assertEqual(fo.loc["合計", "另開方案在扣"], 1)    # P2：失敗後另開 P3
+        self.assertEqual(fo.loc["合計", "尚未恢復"], 1)        # P5：首期失敗
+
+    def test_progress_ratio_and_preventive(self):
+        pr = yc.t2_progress_ratio(self.plans_df)
+        allr = pr[pr["約定期數分組"] == "全部"]
+        self.assertEqual(int(allr["流失數"].sum()), 0)            # 有約定期數的 P1 沒流失
+        self.assertEqual(int(allr["經過的期數(人期)"].sum()), 4)   # P1 第 0–3 期
+        sp = yc.t2_stop_period(self.plans_df)
+        pv = yc.t2_preventive_list(self.plans_df, sp, self.data.as_of)
+        self.assertTrue(set(pv["系統編號"]) <= {"1", "2"})        # 只會是仍在扣款的人
+        self.assertEqual(len(pv), pv["系統編號"].nunique())
+
     def test_events_expanded(self):
         ev = self.data.events
         self.assertEqual((ev["事件類型"] == "電子報").sum(), 5)   # 2025-12 ~ 2026-04 每月 1 日
