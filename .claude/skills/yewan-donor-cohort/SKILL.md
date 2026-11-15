@@ -82,7 +82,7 @@ A 組用官方格式的手工小資料檢查定義（含換卡、首期失敗、
   python scripts/email_digest.py --output-dir yewan_output
   ```
   產生 `yewan_output/email/`：6 張圖（第幾期停／約定進度與期滿續約／失敗之後／活動獲客／活動留存／名單時程）、`email.html`、兩份名單 CSV、`manifest.json`（主旨與附件順序）。
-  再用 Gmail 工具建立**草稿**（不要直接寄出）：`htmlBody` 用 `email.html`，附件依 `manifest.json` 順序放（圖片 `inline: true`，第 N 張對應 `cid:attN`；CSV `inline: false`），收件人要先問使用者（沒指定就寄給使用者自己）。
+  再用 Gmail 工具建立**草稿**（不要直接寄出）：`htmlBody` 用 `email.html`，附件依 `manifest.json` 順序放（圖片 `inline: true`，第 N 張對應 `cid:attN`；CSV `inline: false`），收件人要先問使用者（沒指定就寄給使用者自己）。**內嵌圖片的檔名必須是英數字**（中文檔名的內嵌圖會被 Gmail 草稿工具整張丟掉，`<img>` 變成 `cid:` 空白）；CSV 附件可以用中文檔名。建好草稿後用 `get_draft`（RAW）確認每個 `cid` 都對得到圖片。
   答案句由程式依判定欄位產生；不要手改成「看起來有差」的結論。圖中文字需要中文字型（Colab：`!apt -y install fonts-noto-cjk`）。
 
 每次交付都必須回答（官方「展示時請回答」）：

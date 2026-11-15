@@ -4,7 +4,8 @@
     python email_digest.py --output-dir yewan_output
 
 產出 <output-dir>/email/：
-    c1_*.png … c6_*.png          內嵌圖表（依 manifest 順序 = cid:att0, att1, …）
+    c1_*.png … c6_*.png          內嵌圖表（依 manifest 順序 = cid:att0, att1, …）。檔名必須是英數字：
+                                  Gmail 草稿工具遇到中文檔名的內嵌圖片會整張丟掉
     名單_*.csv                    行銷名單附件（UTF-8 BOM，Excel / Google Sheets 直接開）
     email.html                    信件 HTML（Gmail 相容：全部 inline style、圖用 cid）
     manifest.json                 主旨、附件順序與 MIME 類型（給 Gmail 草稿工具用）
@@ -229,12 +230,12 @@ def build(out: Path) -> dict:
     tests = s["檢定結果"]
     renewal = s["期滿續約"]
 
-    charts = [("c1_第幾期停下來.png", lambda p: chart_stop_period(sp, risky, pooled, p)),
-              ("c2_約定進度與期滿.png", lambda p: chart_progress(ratio, renewal, p)),
-              ("c3_失敗之後.png", lambda p: chart_failure(fo, p)),
-              ("c4_活動獲客.png", lambda p: chart_acquisition(ets, p)),
-              ("c5_活動留存.png", lambda p: chart_retention(ets, p)),
-              ("c6_名單時程.png", lambda p: chart_lists(prev, revive, p))]
+    charts = [("c1_stop_period.png", lambda p: chart_stop_period(sp, risky, pooled, p)),
+              ("c2_term_progress.png", lambda p: chart_progress(ratio, renewal, p)),
+              ("c3_after_failure.png", lambda p: chart_failure(fo, p)),
+              ("c4_event_acquisition.png", lambda p: chart_acquisition(ets, p)),
+              ("c5_event_retention.png", lambda p: chart_retention(ets, p)),
+              ("c6_list_schedule.png", lambda p: chart_lists(prev, revive, p))]
     for name, fn in charts:
         fn(em / name)
 
