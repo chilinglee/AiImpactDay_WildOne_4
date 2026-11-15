@@ -170,11 +170,11 @@ def heatmap(df: pd.DataFrame) -> str:
 def build_report(out_dir: Path, summary: dict, checks: pd.DataFrame, res: dict) -> None:
     o = summary["總覽"]
     kpis = [("期間捐款人", f"{o['期間捐款人數']:,}", f"占聯絡人 {o['期間捐款率']:.1%}"),
-            ("定期方案", f"{o['定期方案數']:,}", f"{o['定期捐款人數']:,} 位捐款人"),
-            ("扣款失敗方案", f"{o['扣款失敗方案數']:,}", f"已恢復 {o['失敗後已恢復方案數']:,}"),
-            ("靜默流失方案", f"{o['靜默流失方案數']:,}", "進行中但久未扣款"),
-            ("期間新捐款人", f"{o['期間新捐款人數']:,}", "首捐為單筆、無既有定期"),
-            ("25 歲以下", f"{o['25歲以下占捐款人']:.1%}", f"占捐款人（聯絡人 {o['25歲以下占聯絡人']:.1%}）")]
+            ("定期捐款人", f"{o['定期捐款人數']:,}", f"目前扣款中 {o['目前扣款中人數']:,} 人"),
+            ("真流失方案", f"{o['期間真流失方案數']:,}", f"其中扣款失敗 {o['其中被動流失(扣款失敗)']:,}"),
+            ("換方案（不是流失）", f"{o['換方案非流失數']:,}", "換卡／續約後仍在扣款"),
+            ("期間新捐款人", f"{o['期間新捐款人數']:,}", "聯絡人在期間內建立"),
+            ("25 歲以下", f"{o['25歲以下占捐款人(已填)']:.1%}", f"占已填年齡捐款人（填寫率 {o['年齡填寫率(捐款人)']:.0%}）")]
     kpi_html = "".join(f'<div class="kpi"><span>{a}</span><b>{b}</b><span>{c}</span></div>' for a, b, c in kpis)
 
     issues = checks[checks["嚴重度"] != "OK"]
@@ -182,15 +182,13 @@ def build_report(out_dir: Path, summary: dict, checks: pd.DataFrame, res: dict) 
     err_n = (issues["嚴重度"] == "ERROR").sum()
 
     sp = res["t2_停止期數"]
-    sp_test = sp.attrs.get("test", {})
-    overall = sp["於此期停止"].sum() / sp["仍在觀察中的方案數"].sum()
-    stop_chart = bar_chart(sp["期數"].tolist(), sp["停止率(hazard)"].tolist(),
-                           sp["停止率95%下界"].tolist(), sp["停止率95%上界"].tolist(), overall, "各期停止率")
+    sp_show = sp[sp["期數"] <= 24]
+    overall = sp_show["於此期流失"].sum() / sp_show["仍在觀察中的方案數"].sum()
+    stop_chart = bar_chart(sp_show["期數"].tolist(), sp_show["停止率(hazard)"].tolist(),
+                           sp_show["停止率95%下界"].tolist(), sp_show["停止率95%上界"].tolist(), overall, "各期停止率")
 
     weekly = res["t3_每週新捐款人"]
-    ev_df = pd.DataFrame([{"事件編號": e["事件編號"], "事件名稱": e["事件名稱"],
-                           "日期": res["t3_活動前後新捐款人"].set_index("事件編號").loc[e["事件編號"], "日期"]}
-                          for e in summary["活動判定"]])
+    ev_df = res["t3_活動前後"].drop_duplicates("事件編號")[["事件編號", "事件名稱", "日期"]]
     wk_chart = line_with_events(pd.to_datetime(weekly["週起始日"]), weekly["新捐款人數"].tolist(), ev_df)
 
     def tests_list(keys):
@@ -209,22 +207,32 @@ def build_report(out_dir: Path, summary: dict, checks: pd.DataFrame, res: dict) 
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>野灣捐款留存分析</title><style>{CSS}</style></head>
 <body><main>
 <h1>野灣捐款留存分析報告</h1>
-<p class="lead">資料期間 {E(o['資料期間'])}。每個發現都附上可信度判定：<span class="badge b-ok">差異顯著</span> 可以拿來做決策；
+<p class="lead">資料期間 {E(o['資料期間'])}（虛構示範資料）。每個發現都附上可信度判定：<span class="badge b-ok">差異顯著</span> 可以拿來做決策；
 <span class="badge b-no">不宜下結論</span> 代表差異可能只是隨機波動。</p>
 <div class="kpis">{kpi_html}</div>
 
 <h2>0. 資料可信度檢查</h2>
 <p class="lead">ERROR {err_n} 項、WARN {warn_n} 項。WARN 不會阻擋分析，但會改變「哪個欄位可以信」，下方各章節已依此調整算法。</p>
+<div class="note">④ 定期定額明細「一人只有一列」，常常是舊方案。本報告先用 ② 的定期捐款編號還原出 {o['定期方案數(還原後)']:,} 個方案
+（④ 只列 {o['其中④有列']:,} 個）。④ 顯示「已失敗／待處理」的人裡，有 {o['④顯示失敗或待處理但此人仍在扣款']:,} 位其實還有另一個方案在扣款
+——直接用 ④ 做名單，會打擾到正在捐款的人。</div>
 {table(issues, "tbl-checks", filt=True)}
 
+<h2>任務一：誰在支持野灣（輪廓）</h2>
+{tests_list(["t1_支持者輪廓"])}
+{table(res["t1_支持者輪廓"], "tbl-t1")}
+<p class="cap">25 歲以下比例的分母＝已填年齡的人；年齡填寫率一併列出。</p>
+
 <h2>任務二：留住定期定額捐款人</h2>
+<h3>停下來的方案，哪些是真的流失？</h3>
+<p class="lead">「換方案」＝方案停了，但同一人另有方案正在扣款（官網換卡必須重設方案）。只有「真流失」需要挽回。</p>
+{table(res["t2_流失類型"], "tbl-ctype")}
+
 <h3>捐款人最常在第幾期停止？</h3>
-<p class="lead">以「定期明細．執行期數」計算每一期的停止率（停止＝狀態為 暫停中／已失敗；進行中／待處理視為仍在觀察）。
-誤差線＝95% 信賴區間。</p>
+<p class="lead">期數取自 ② 交易編號後段（＝④ 執行期數）。舊方案從期間內第一期開始觀察（延遲進入），期間新開的方案從第 0 期開始；
+第 0 期＝第一次扣款就沒成功。誤差線＝95% 信賴區間（圖只畫到第 24 期）。</p>
 {stop_chart}
 {tests_list(["t2_停止期數"])}
-<div class="note">讀圖注意：後段期數的觀察人數很少，誤差線會變寬；若上方獨立性檢定為「不宜下結論」，
-後段 hazard 上升只是分母變小的機械效果，不代表第 10–12 期是危險期。</div>
 {table(sp, "tbl-stop")}
 
 <h3>設定期數 vs 實際</h3>
@@ -237,28 +245,31 @@ def build_report(out_dir: Path, summary: dict, checks: pd.DataFrame, res: dict) 
 
 <h3>流失預警：距最近一次扣款幾天</h3>
 {table(res["t2_沉默天數分布"], "tbl-inact")}
-<h3>月流失率</h3>
-<p class="lead">某月是最後一次扣款、之後到截止日都沒再扣＝該月流失。距截止日不到「扣款間隔 P90」天的月份不判定，
-避免把「只是還沒扣」誤認為流失。</p>
+<h3>月流失率（以人計）</h3>
+<p class="lead">某人最後一次定期扣款在 m 月、之後到截止日都沒再扣＝m 月流失。以「人」計算，換卡不會被誤算成流失。
+距截止日不到「扣款間隔 P90」天的月份不判定。</p>
 {table(res["t2_月流失率"], "tbl-churn")}
 
-<h3>定期捐款人 Cohort 留存（以期間內首次扣款月份分群）</h3>
-<div class="note">2025-11 這一群包含「期間開始前就在捐」的老捐款人（左截斷），不能和後面的月份直接比較。</div>
+<h3>新定期捐款人 Cohort 留存（以首次扣款月份分群）</h3>
 {heatmap(res["t2_定期Cohort留存"])}
 
 <h3>哪一群人比較容易流失？（分群檢定總表）</h3>
 {seg_tbl}
-<p class="cap">完整分群比率與信賴區間見 t2_分群比較_*.csv。</p>
+<p class="cap">完整分群比率與信賴區間見 t2_分群比較_流失.csv、t3_新捐款人後續行為.csv。</p>
 
-<h3>優先提醒名單（前 200 筆，可排序／篩選）</h3>
-<p class="lead">分數規則透明：每一分都寫在「理由」欄，方便公益勸募科人工確認。完整名單見 t2_優先提醒名單.csv。</p>
+<h3>優先提醒名單（一人一列，前 200 筆，可排序／篩選）</h3>
+<p class="lead">分數規則透明：每一分都寫在「理由」欄。此人另有方案在扣款的舊方案已排除。完整名單見 t2_優先提醒名單.csv。</p>
 {table(res["t2_優先提醒名單"], "tbl-remind", filt=True, limit=200)}
 
 <h2>任務三：找出讓人開始支持的時刻</h2>
-<p class="lead">新捐款人＝期間內首捐為單筆、且期間前沒有任何定期方案的人。前 30 天為暖機期（舊捐款人會被誤判為新），不納入基準。</p>
+<p class="lead">新捐款人＝期間內有捐款、且聯絡人在期間內才建立的人（官網多半在捐款當下建立聯絡人）。</p>
 {wk_chart}
-<h3>每個活動後 7 天，新捐款人是否顯著增加？</h3>
-{table(res["t3_活動前後新捐款人"], "tbl-ev")}
+<h3>每個活動窗內，新捐款人／新定期方案是否顯著增加？</h3>
+<p class="lead">活動窗＝活動日起 7 天；備註有「至 M/D」的以該日為止。基準＝活動前 14 天日均。p 值以活動數做 Bonferroni 校正。</p>
+{table(res["t3_活動前後"], "tbl-ev", filt=True)}
+<h3>時間軸上找不到原因的高峰</h3>
+<p class="lead">單日數量遠高於前 28 天中位數（p &lt; 0.001 且 ≥ 2 倍）的日子。「（找不到）」＝需要勸募科回想當天發生什麼、並開始記錄。</p>
+{table(res["t3_未解釋高峰"], "tbl-spike")}
 <h3>新捐款人之後有沒有再捐、轉定期？</h3>
 {table(res["t3_新捐款人後續行為"], "tbl-follow", filt=True)}
 <h3>新捐款人 Cohort 留存</h3>
